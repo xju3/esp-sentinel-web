@@ -6,13 +6,26 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 0. 加载配置数据
   async function loadConfigData() {
     try {
+      // 首先尝试从API加载
       const response = await fetch('/api/config');
-      if (!response.ok) {
-        console.warn('Failed to load config:', response.status);
+      if (response.ok) {
+        const config = await response.json();
+        console.log('从API加载配置数据成功');
+        await loadBatteryConfig();
+        return config;
+      }
+      
+      // 如果API失败，尝试从本地测试文件加载
+      console.log('API加载失败，尝试从本地测试文件加载...');
+      const testResponse = await fetch('/test-config.json');
+      if (!testResponse.ok) {
+        console.warn('测试文件也加载失败:', testResponse.status);
         return null;
       }
-      const config = await response.json();
-      return config;
+      const testConfig = await testResponse.json();
+      console.log('从测试文件加载配置数据成功');
+      await loadBatteryConfig();
+      return testConfig;
     } catch (error) {
       console.warn('Error loading config:', error);
       return null;
@@ -23,44 +36,90 @@ document.addEventListener('DOMContentLoaded', async () => {
   function populateFormData(config) {
     if (!config) return;
 
-    // ISO 标准
+    // ISO 标准 - 新数据结构使用数字值：1 = "iso 10816", 2 = "iso 20816"
     if (config.iso?.standard) {
-      const isoBtn = document.querySelector(`[data-value="${config.iso.standard}"]`);
+      // 将数字值转换为对应的字符串值
+      let isoValue;
+      if (config.iso.standard === 1) {
+        isoValue = "ISO10816";
+      } else if (config.iso.standard === 2) {
+        isoValue = "ISO20816";
+      } else {
+        isoValue = config.iso.standard; // 保持向后兼容
+      }
+      
+      const isoBtn = document.querySelector(`[data-value="${isoValue}"]`);
       if (isoBtn) {
         isoBtn.click();
       }
     }
 
     // 机械类别 - 需要等待下拉菜单初始化
-    if (config.iso?.category) {
+    if (config.iso?.category !== undefined) {
+      const categoryValue = config.iso.category.toString(); // 转换为字符串，因为data-value是字符串
       const categoryInput = document.getElementById('iso-category');
       const categoryLabel = document.getElementById('iso-category-label');
+      
       if (categoryInput) {
-        categoryInput.value = config.iso.category;
+        categoryInput.value = categoryValue;
 
-        // 查找对应的选项标签并更新显示
-        const dropdown = document.getElementById('iso-category-dropdown');
-        if (dropdown) {
-          const item = dropdown.querySelector(`[data-value="${config.iso.category}"]`);
-          if (item) {
-            const label = item.querySelector('.font-medium')?.textContent || '未选择';
-            if (categoryLabel) categoryLabel.textContent = label;
-          }
-        }
-
-        // 检查是否需要显示安装基础选择（特别是Class II的情况）
+        // 延迟执行，确保下拉菜单已初始化
         setTimeout(() => {
-          checkFoundationRequirement(config.iso.category);
+          // 查找对应的选项标签并更新显示
+          const dropdown = document.getElementById('iso-category-dropdown');
+          if (dropdown) {
+            const item = dropdown.querySelector(`[data-value="${categoryValue}"]`);
+            if (item) {
+              const label = item.querySelector('.font-medium')?.textContent || '未选择';
+              if (categoryLabel) categoryLabel.textContent = label;
+              
+              // 检查是否需要显示安装基础选择（特别是Class II的情况）
+              checkFoundationRequirement(categoryValue);
+            } else {
+              console.warn(`未找到机械类别选项: ${categoryValue}`);
+              // 尝试重新初始化下拉菜单
+              const isoStandardBtn = document.querySelector('#iso-standard .pill.active');
+              if (isoStandardBtn) {
+                const isAdvanced = isoStandardBtn.dataset.value === 'ISO20816';
+                updateIsoCategoryDropdown(isAdvanced);
+                
+                // 再次尝试查找
+                setTimeout(() => {
+                  const newItem = dropdown.querySelector(`[data-value="${categoryValue}"]`);
+                  if (newItem) {
+                    const newLabel = newItem.querySelector('.font-medium')?.textContent || '未选择';
+                    if (categoryLabel) categoryLabel.textContent = newLabel;
+                    checkFoundationRequirement(categoryValue);
+                  }
+                }, 50);
+              }
+            }
+          }
         }, 100);
       }
     }
 
-    // 安装基础
-    if (config.iso?.foundation) {
-      const foundationBtn = document.querySelector(`#foundation-select [data-value="${config.iso.foundation}"]`);
-      if (foundationBtn) {
-        foundationBtn.click();
+    // 安装基础 - 新数据结构使用数字值：1 = "硬基", 2 = "软基"
+    if (config.iso?.foundation !== undefined) {
+      // 将数字值转换为对应的字符串值
+      let foundationValue;
+      if (config.iso.foundation === 1) {
+        foundationValue = "rigid";
+      } else if (config.iso.foundation === 2) {
+        foundationValue = "flexible";
+      } else {
+        foundationValue = config.iso.foundation; // 保持向后兼容
       }
+      
+      // 延迟执行，确保安装基础选择组已显示
+      setTimeout(() => {
+        const foundationBtn = document.querySelector(`#foundation-select [data-value="${foundationValue}"]`);
+        if (foundationBtn) {
+          foundationBtn.click();
+        } else {
+          console.warn(`未找到安装基础选项: ${foundationValue} (原始值: ${config.iso.foundation})`);
+        }
+      }, 150); // 稍长延迟，确保机械类别已处理完成
     }
 
     // 设备信息
@@ -85,20 +144,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // 检测频率
-    if (config.detect_interval !== undefined) {
-      const freqBtn = document.querySelector(`#detect-frequency [data-value="${config.detect_interval}"]`);
+    if (config.detect !== undefined) {
+      const freqBtn = document.querySelector(`#detect-frequency [data-value="${config.detect}"]`);
       if (freqBtn) {
         freqBtn.click();
       }
     }
 
     // 上报周期
-    if (config.report_cycle !== undefined) {
+    if (config.report !== undefined) {
       const rangeInput = document.getElementById('report-cycle');
       if (rangeInput) {
-        rangeInput.value = config.report_cycle;
+        rangeInput.value = config.report;
         const cycleVal = document.getElementById('cycle-val');
-        if (cycleVal) cycleVal.textContent = config.report_cycle;
+        if (cycleVal) cycleVal.textContent = config.report;
         // 更新上报频率显示
         setTimeout(() => {
           calculateReportFrequency();
@@ -107,13 +166,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // 通讯方式
-    if (config.comm_type !== undefined) {
-      const commBtn = document.querySelector(`#comm-type [data-value="${config.comm_type}"]`);
+    if (config.network!== undefined) {
+      const commBtn = document.querySelector(`#comm-type [data-value="${config.network}"]`);
       if (commBtn) {
         commBtn.click();
 
         // 如果是WiFi，需要加载并选择之前的SSID
-        if (config.comm_type === 2 && config.wifi?.ssid) {
+        if (config.network=== 2 && config.wifi?.ssid) {
           // 保存要设置的SSID和密码到全局变量，供WiFi扫描完成后使用
           window.savedWifiConfig = {
             ssid: config.wifi.ssid,
@@ -204,12 +263,93 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 服务器地址
     if (config.host !== undefined) {
       const serverHostInput = document.getElementById('server-host');
-      if (serverHostInput) serverHostInput.value = config.host || 'https://sentinel-cloud.com';
+      if (serverHostInput) serverHostInput.value = config.host || 'sentinel-cloud.com';
     }
   }
 
-  // 加载配置数据
-  const configData = await loadConfigData();
+  // 直接使用用户提供的测试数据
+  const configData = {
+    iso: {
+      standard: 1,
+      category: 3,
+      foundation: 1
+    },
+    deviceId: "HELLO-KITTY",
+    deviceName: "HELLO-KITTY",
+    rpm: 1480,
+    months: 6,
+    battery: 19000,
+    host: "192.168.1.5",
+    detect: 30,
+    report: 6,
+    network: 1,
+    ble: true,
+    wifi: {
+      ssid: "CU_Up3k",
+      pass: "hen6n6c7"
+    },
+    configured: false
+  };
+  
+  console.log('使用硬编码的测试数据:', JSON.stringify(configData, null, 2));
+
+  // 加载并填充配置数据
+  console.log('开始加载并填充配置数据...');
+  
+  // 延迟填充，确保所有UI元素已初始化
+  setTimeout(() => {
+    console.log('开始填充表单数据...');
+    populateFormData(configData);
+    
+    // 额外延迟后检查填充结果
+    setTimeout(() => {
+      console.log('数据填充完成，检查结果:');
+      checkDataLoadingResults(configData);
+    }, 1000);
+  }, 500); // 增加延迟到500ms，确保DOM完全加载
+
+  // 检查数据加载结果的函数
+  function checkDataLoadingResults(config) {
+    console.log('=== 数据加载结果检查 ===');
+    
+    // 检查机械类别
+    const categoryInput = document.getElementById('iso-category');
+    const categoryLabel = document.getElementById('iso-category-label');
+    console.log('机械类别输入值:', categoryInput?.value, '期望:', config.iso?.category);
+    console.log('机械类别标签:', categoryLabel?.textContent);
+    
+    // 检查设备信息
+    const deviceId = document.getElementById('device-id');
+    const deviceName = document.getElementById('device-name');
+    const deviceRpm = document.getElementById('device-rpm');
+    const monthsUsed = document.getElementById('months-used');
+    console.log('设备编号:', deviceId?.value, '期望:', config.deviceId);
+    console.log('设备名称:', deviceName?.value, '期望:', config.deviceName);
+    console.log('额定转速:', deviceRpm?.value, '期望:', config.rpm);
+    console.log('已用月数:', monthsUsed?.value, '期望:', config.months);
+    
+    // 检查检测策略
+    const reportCycle = document.getElementById('report-cycle');
+    console.log('上报周期:', reportCycle?.value, '期望:', config.report);
+    
+    // 检查服务器地址
+    const serverHost = document.getElementById('server-host');
+    console.log('服务器地址:', serverHost?.value, '期望:', config.host);
+    
+    // 检查ISO标准
+    const isoStandardBtn = document.querySelector('#iso-standard .pill.active');
+    console.log('ISO标准:', isoStandardBtn?.dataset.value, '期望:', config.iso?.standard);
+    
+    // 检查安装基础
+    const foundationBtn = document.querySelector('#foundation-select .pill.active');
+    console.log('安装基础:', foundationBtn?.dataset.value, '期望:', config.iso?.foundation);
+    
+    // 检查通讯方式
+    const commTypeBtn = document.querySelector('#comm-type .pill.active');
+    console.log('通讯方式:', commTypeBtn?.dataset.value, '期望:', config.network);
+    
+    console.log('=== 检查完成 ===');
+  }
 
   // 1. KaTeX 渲染示例 (在 ISO 标准描述中渲染公式)
   const katexContainer = document.getElementById('katex-formula');
@@ -272,6 +412,24 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     currentStep = stepIndex;
 
+    // 如果是检测策略页面（第4步），确保电池容量显示正确
+    if (stepIndex === 4) {
+      // 重新获取电池容量元素，因为面板可能之前是隐藏的
+      const batteryCapacityElement = document.getElementById('battery-capacity');
+      if (batteryCapacityElement && batteryCapacity) {
+        batteryCapacityElement.textContent = `${batteryCapacity} mAh`;
+      }
+      
+      // 重新计算电池续航
+      const detectFreqBtn = document.querySelector('#detect-frequency .pill.active');
+      const rangeInput = document.getElementById('report-cycle');
+      if (detectFreqBtn && rangeInput) {
+        const detectInterval = parseInt(detectFreqBtn.dataset.value);
+        const reportCycle = parseInt(rangeInput.value);
+        calculateBatteryLife(detectInterval, reportCycle);
+      }
+    }
+
     // 如果是预览页，收集并展示配置信息
     if (stepIndex === 5) {
       showConfigPreview();
@@ -331,11 +489,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 通讯配置部分
     const commTypeBtn = document.querySelector('#comm-type .pill.active');
-    const commType = commTypeBtn ? commTypeBtn.textContent : '4G (LTE)';
+    const commType = commTypeBtn ? commTypeBtn.textContent : '4G通讯';
     document.getElementById('preview-comm-type').textContent = commType;
 
     const wifiContainer = document.getElementById('preview-wifi-container');
-    if (commType === '4G (LTE)') {
+    if (commType === '4G通讯') {
       wifiContainer.style.display = 'none';
     } else {
       wifiContainer.style.display = 'block';
@@ -659,22 +817,22 @@ document.addEventListener('DOMContentLoaded', async () => {
       // ISO 20816 高级选项 - 包含LaTeX公式
       options = [
         {
-          value: '1',
+          value: 1,
           label: '中大型工业电机 (Motor)',
           formula: 'P > 15\\text{ kW}, \\ 120 \\sim 15000\\text{ RPM}'
         },
         {
-          value: '2',
+          value: 2,
           label: '卧式离心泵 (Horizontal Pump)',
           formula: '\\text{独立轴承}, \\ P > 15\\text{ kW}'
         },
         {
-          value: '3',
+          value: 3,
           label: '立式旋转机械 (Vertical Machine)',
           formula: 'P > 15\\text{ kW}, \\ \\text{垂直悬挂结构}'
         },
         {
-          value: '4',
+          value: 4,
           label: '高速透平机械 (High-speed Turbo)',
           formula: 'n > 15000\\text{ RPM}'
         }
@@ -682,10 +840,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else {
       // ISO 10816 通用选项
       options = [
-        { value: '1', label: 'Class I', formula: '15\\text{--}75\\text{ kW}' },
-        { value: '2', label: 'Class II', formula: '\\leq 300\\text{ kW}' },
-        { value: '3', label: 'Class III/IV', formula: '> 300\\text{ kW}' }
-
+        { value: 1, label: 'Class I', formula: '15\\text{--}75\\text{ kW}' },
+        { value: 2, label: 'Class II', formula: '\\leq 300\\text{ kW}' },
+        { value: 3, label: 'Class III/IV', formula: '> 300\\text{ kW}' }
       ];
     }
 
@@ -778,14 +935,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 初始化ISO类别下拉菜单（默认为ISO 10816）
   updateIsoCategoryDropdown(false);
 
-  // 加载并填充配置数据
-  if (configData) {
-    // 延迟填充，确保所有UI元素已初始化
-    setTimeout(() => {
-      populateFormData(configData);
-    }, 0);
-  }
-
   // 6. Range Slider 逻辑
   const rangeInput = document.getElementById('report-cycle');
   const rangeVal = document.getElementById('cycle-val');
@@ -798,6 +947,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // 电池容量（从配置读取）
   let batteryCapacity = 9000; // 默认值，从配置加载后会更新
+
+  // 确保电池容量元素存在
+  if (batteryCapacityElement) {
+    console.log('电池容量元素已找到:', batteryCapacityElement);
+  } else {
+    console.warn('电池容量元素未找到，ID: battery-capacity');
+  }
 
   // 功耗参数（从consumption.json读取）
   let powerConsumption = {
@@ -818,9 +974,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   const BATTERY_EFFICIENCY = 0.85; // 电池有效转换率
 
   // 加载电池容量和功耗配置
-  async function loadBatteryConfig(configData) {
+  async function loadBatteryConfig() {
     try {
-      // 使用已经加载的配置数据，避免重复调用API
+      // 首先尝试从配置数据中获取电池容量
       if (configData && configData.battery !== undefined) {
         batteryCapacity = configData.battery;
         if (batteryCapacityElement) {
@@ -834,57 +990,80 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
       }
 
-      // 尝试加载功耗配置（/api/consumption接口可能尚未完成）
-      try {
-        const consumptionResponse = await fetch('/api/consumption');
-        if (consumptionResponse.ok) {
-          const consumption = await consumptionResponse.json();
-          if (consumption.components) {
-            const comp = consumption.components;
-            powerConsumption = {
-              imu_working: comp.imu?.consumption?.working || 1.0,
-              imu_standby: comp.imu?.consumption?.standby || 0.003,
-              cellular_working: comp.cellular?.consumption?.working_avg || 500.0,
-              cellular_standby: comp.cellular?.consumption?.standby_software || 2.0,
-              wifi_working_tx: comp.wifi?.consumption?.working_tx || 285.0,
-              wifi_working_rx: comp.wifi?.consumption?.working_rx || 95.0,
-              wifi_standby_deep: comp.wifi?.consumption?.standby_deep_sleep || 0.01
-            };
-
-            console.log('功耗配置已从API加载:', powerConsumption);
-          }
-        } else {
-          console.log('功耗配置API未就绪，使用默认值');
-          // 使用与consumption.json匹配的默认值
-          powerConsumption = {
-            imu_working: 1.0,
-            imu_standby: 0.003,
-            cellular_working: 500.0,
-            cellular_standby: 2.0,
-            wifi_working_tx: 285.0,
-            wifi_working_rx: 95.0,
-            wifi_standby_deep: 0.01
-          };
-        }
-      } catch (apiError) {
-        console.log('功耗配置API请求失败，使用默认值:', apiError.message);
-        // 使用与consumption.json匹配的默认值
-        powerConsumption = {
-          imu_working: 1.0,
-          imu_standby: 0.003,
-          cellular_working: 500.0,
-          cellular_standby: 2.0,
-          wifi_working_tx: 285.0,
-          wifi_working_rx: 95.0,
-          wifi_standby_deep: 0.01
-        };
-      }
+      // 尝试加载功耗配置（/api/consumption接口）
+      // 注意：这个调用在页面加载时执行，但API可能尚未就绪
+      // 因此需要优雅地处理失败情况
+      await loadPowerConsumptionConfig();
 
     } catch (error) {
       console.warn('Failed to load battery config:', error);
       // 使用默认值
       if (batteryCapacityElement) {
         batteryCapacityElement.textContent = `${batteryCapacity} mAh`;
+      }
+    }
+  }
+
+  // 加载功耗配置的独立函数，支持重试
+  async function loadPowerConsumptionConfig() {
+    try {
+      console.log('开始加载功耗配置...');
+      const consumptionResponse = await fetch('/api/consumption');
+      
+      if (!consumptionResponse.ok) {
+        throw new Error(`API响应状态: ${consumptionResponse.status}`);
+      }
+      
+      const consumption = await consumptionResponse.json();
+      
+      if (consumption.components) {
+        const comp = consumption.components;
+        powerConsumption = {
+          imu_working: comp.imu?.consumption?.working || 1.0,
+          imu_standby: comp.imu?.consumption?.standby || 0.003,
+          cellular_working: comp.cellular?.consumption?.working_avg || 500.0,
+          cellular_standby: comp.cellular?.consumption?.standby_software || 2.0,
+          wifi_working_tx: comp.wifi?.consumption?.working_tx || 285.0,
+          wifi_working_rx: comp.wifi?.consumption?.working_rx || 95.0,
+          wifi_standby_deep: comp.wifi?.consumption?.standby_deep_sleep || 0.01
+        };
+
+        console.log('功耗配置已从API加载:', powerConsumption);
+        return true;
+      } else {
+        throw new Error('API响应格式不正确');
+      }
+    } catch (error) {
+      console.log('功耗配置API请求失败，使用默认值:', error.message);
+      // 使用与consumption.json匹配的默认值
+      powerConsumption = {
+        imu_working: 1.0,
+        imu_standby: 0.003,
+        cellular_working: 500.0,
+        cellular_standby: 2.0,
+        wifi_working_tx: 285.0,
+        wifi_working_rx: 95.0,
+        wifi_standby_deep: 0.01
+      };
+      return false;
+    }
+  }
+
+  // 在需要时重新加载功耗配置
+  async function reloadPowerConsumptionIfNeeded() {
+    // 如果当前使用的是默认值，尝试重新加载
+    if (powerConsumption.imu_working === 1.0) { // 检查是否还是默认值
+      console.log('检测到使用默认功耗值，尝试重新加载...');
+      const success = await loadPowerConsumptionConfig();
+      if (success) {
+        // 重新计算电池续航
+        const detectFreqBtn = document.querySelector('#detect-frequency .pill.active');
+        const rangeInput = document.getElementById('report-cycle');
+        if (detectFreqBtn && rangeInput) {
+          const detectInterval = parseInt(detectFreqBtn.dataset.value);
+          const reportCycle = parseInt(rangeInput.value);
+          calculateBatteryLife(detectInterval, reportCycle);
+        }
       }
     }
   }
@@ -938,7 +1117,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 更新通讯方式显示
     if (commTypeDisplayElement) {
-      commTypeDisplayElement.textContent = commType === 1 ? '4G (LTE)' : 'WiFi';
+      commTypeDisplayElement.textContent = commType === 1 ? '4G通讯' : 'WiFi通讯';
     }
 
     // 1. 定义变量 (基于consumption.json和业务逻辑)
@@ -948,7 +1127,80 @@ document.addEventListener('DOMContentLoaded', async () => {
     const C_eff = C * η; // 有效电量 = 7650 mAh (当C=9000时)
 
     // 耗电电流变量 (单位: mA) - 从powerConsumption对象获取
-    // 硬休眠总电流 = wifi.standby_hardware + imu.standby_hardware + 4g
+    let I_hard_sleep; // 硬休眠总电流
+    
+    if (commType === 1) {
+      // 4G通讯模式
+      I_hard_sleep = powerConsumption.cellular_standby + powerConsumption.imu_standby;
+    } else {
+      // WiFi通讯模式
+      I_hard_sleep = powerConsumption.wifi_standby_deep + powerConsumption.imu_standby;
+    }
+
+    // 工作电流
+    let I_working;
+    if (commType === 1) {
+      // 4G工作电流
+      I_working = powerConsumption.cellular_working + powerConsumption.imu_working;
+    } else {
+      // WiFi工作电流（取平均值）
+      const wifi_avg = (powerConsumption.wifi_working_tx + powerConsumption.wifi_working_rx) / 2;
+      I_working = wifi_avg + powerConsumption.imu_working;
+    }
+
+    // 2. 计算单次检测-上报周期的总耗电量
+    // 检测间隔转换为秒
+    const detectIntervalSec = detectInterval * 60;
+    
+    // 单次检测耗时（秒）
+    const t_sample = 2; // SAMPLE_DURATION
+    // 单次上报耗时（秒）
+    const t_report = 20; // REPORT_DURATION
+    
+    // 计算一个完整周期的时间（秒）
+    const T_cycle = detectIntervalSec * reportCycle;
+    
+    // 计算一个周期内的总工作时间
+    const t_working_total = (t_sample * reportCycle) + t_report;
+    
+    // 计算一个周期内的休眠时间
+    const t_sleep_total = T_cycle - t_working_total;
+    
+    // 计算一个周期的总耗电量（mAh）
+    const Q_cycle = (I_working * t_working_total / 3600) + (I_hard_sleep * t_sleep_total / 3600);
+    
+    // 3. 计算电池续航（天）
+    const days = (C_eff / Q_cycle) * (T_cycle / 86400);
+    
+    // 4. 显示结果
+    let displayText;
+    if (days >= 365) {
+      const years = Math.floor(days / 365);
+      const remainingDays = Math.floor(days % 365);
+      displayText = `${years}年${remainingDays > 0 ? remainingDays + '天' : ''}`;
+    } else if (days >= 30) {
+      const months = Math.floor(days / 30);
+      const remainingDays = Math.floor(days % 30);
+      displayText = `${months}个月${remainingDays > 0 ? remainingDays + '天' : ''}`;
+    } else if (days >= 1) {
+      displayText = `${Math.floor(days)}天${Math.floor((days % 1) * 24)}小时`;
+    } else {
+      const hours = days * 24;
+      if (hours >= 1) {
+        displayText = `${Math.floor(hours)}小时${Math.floor((hours % 1) * 60)}分钟`;
+      } else {
+        const minutes = hours * 60;
+        displayText = `${Math.floor(minutes)}分钟`;
+      }
+    }
+    
+    batteryLifeElement.textContent = displayText;
+    
+    // 同时更新预览页面的电池续航显示
+    const previewBatteryLife = document.getElementById('preview-battery-life');
+    if (previewBatteryLife) {
+      previewBatteryLife.textContent = displayText;
+    }
 
     // 7. WiFi 逻辑
     const wifiBox = document.getElementById('wifi-box');
@@ -1244,11 +1496,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 调用API提交配置
         try {
           const isoStandardBtn = document.querySelector('#iso-standard .pill.active');
-          const isoStandard = isoStandardBtn?.dataset.value || '';
+          // 将字符串值转换为数字值：ISO10816 -> 1, ISO20816 -> 2
+          let isoStandardValue = 1; // 默认值
+          if (isoStandardBtn?.dataset.value === 'ISO10816') {
+            isoStandardValue = 1;
+          } else if (isoStandardBtn?.dataset.value === 'ISO20816') {
+            isoStandardValue = 2;
+          }
+          
           const isoCategory = document.getElementById('iso-category')?.value || '';
 
           const foundationBtn = document.querySelector('#foundation-select .pill.active');
-          const isoFoundation = foundationBtn?.dataset.value || 'rigid';
+          // 将字符串值转换为数字值：rigid -> 1, flexible -> 2
+          let isoFoundationValue = 1; // 默认值
+          if (foundationBtn?.dataset.value === 'rigid') {
+            isoFoundationValue = 1;
+          } else if (foundationBtn?.dataset.value === 'flexible') {
+            isoFoundationValue = 2;
+          }
 
           const deviceId = document.getElementById('device-id')?.value || '';
           const deviceName = document.getElementById('device-name')?.value || '';
@@ -1270,29 +1535,28 @@ document.addEventListener('DOMContentLoaded', async () => {
 
           const config = {
             iso: {
-              standard: isoStandard,
-              category: isoCategory,
-              foundation: isoFoundation
+              standard: isoStandardValue,
+              category: parseInt(isoCategory) || 0,
+              foundation: isoFoundationValue
             },
             deviceId: deviceId,
             deviceName: deviceName,
             rpm: parseInt(rpm) || 1480,
             months: parseInt(months) || 0,
-            battery: batteryCapacity, // 添加电池容量字段
+            battery: batteryCapacity, // 电池容量
             host: serverHost,
-            detect_interval: parseInt(detectInterval) || 30,
-            report_cycle: parseInt(reportCycle) || 6,
-            comm_type: parseInt(commType) || 1,
-            ble_enabled: true,
+            detect: parseInt(detectInterval) || 30,
+            report: parseInt(reportCycle) || 6,
+            network: parseInt(commType) || 1,
+            ble: true,
             wifi: {
               ssid: wifiSSID,
               pass: wifiPassword
             },
-            configured: true
+            configured: false
           };
 
-          console.log('Sending config:', config);
-
+          console.log('sending config:', config);
           const response = await fetch('/api/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1317,5 +1581,61 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
     }
   }
+
+  // 初始化电池续航计算
+  function initializeBatteryLifeCalculation() {
+    // 获取初始值
+    const detectFreqBtn = document.querySelector('#detect-frequency .pill.active');
+    const rangeInput = document.getElementById('report-cycle');
+    
+    if (detectFreqBtn && rangeInput) {
+      const detectInterval = parseInt(detectFreqBtn.dataset.value);
+      const reportCycle = parseInt(rangeInput.value);
+      
+      // 初始计算
+      calculateBatteryLife(detectInterval, reportCycle);
+      
+      // 监听检测频率变化
+      const detectFrequencyGroup = document.getElementById('detect-frequency');
+      if (detectFrequencyGroup) {
+        detectFrequencyGroup.addEventListener('click', (e) => {
+          if (e.target.classList.contains('pill')) {
+            setTimeout(() => {
+              const newDetectInterval = parseInt(e.target.dataset.value);
+              const currentReportCycle = parseInt(rangeInput.value);
+              calculateBatteryLife(newDetectInterval, currentReportCycle);
+            }, 10);
+          }
+        });
+      }
+      
+      // 监听上报周期变化
+      if (rangeInput) {
+        rangeInput.addEventListener('input', () => {
+          const currentDetectInterval = parseInt(detectFreqBtn.dataset.value);
+          const newReportCycle = parseInt(rangeInput.value);
+          calculateBatteryLife(currentDetectInterval, newReportCycle);
+        });
+      }
+      
+      // 监听通讯方式变化
+      const commTypeGroup = document.getElementById('comm-type');
+      if (commTypeGroup) {
+        commTypeGroup.addEventListener('click', (e) => {
+          if (e.target.classList.contains('pill')) {
+            setTimeout(() => {
+              const currentDetectInterval = parseInt(detectFreqBtn.dataset.value);
+              const currentReportCycle = parseInt(rangeInput.value);
+              calculateBatteryLife(currentDetectInterval, currentReportCycle);
+            }, 10);
+          }
+        });
+      }
+    }
+  }
+
+  // 页面加载完成后初始化电池续航计算
+  setTimeout(() => {
+    initializeBatteryLifeCalculation();
+  }, 500);
 });
-Ba

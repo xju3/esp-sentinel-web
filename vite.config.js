@@ -2,7 +2,7 @@ import { defineConfig } from 'vite'
 
 export default defineConfig({
   build: {
-    outDir: '../resources/system/www',
+    outDir: '../idf/resources/system/www',
     emptyOutDir: true,
     rollupOptions: {
       output: {
