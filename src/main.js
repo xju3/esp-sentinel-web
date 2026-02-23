@@ -6,26 +6,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 0. 加载配置数据
   async function loadConfigData() {
     try {
-      // 首先尝试从API加载
       const response = await fetch('/api/config');
-      if (response.ok) {
-        const config = await response.json();
-        console.log('从API加载配置数据成功');
-        await loadBatteryConfig();
-        return config;
-      }
-      
-      // 如果API失败，尝试从本地测试文件加载
-      console.log('API加载失败，尝试从本地测试文件加载...');
-      const testResponse = await fetch('/test-config.json');
-      if (!testResponse.ok) {
-        console.warn('测试文件也加载失败:', testResponse.status);
+      if (!response.ok) {
+        console.warn('API加载失败:', response.status);
         return null;
       }
-      const testConfig = await testResponse.json();
-      console.log('从测试文件加载配置数据成功');
+      const config = await response.json();
+      console.log('从API加载配置数据成功');
       await loadBatteryConfig();
-      return testConfig;
+      return config;
     } catch (error) {
       console.warn('Error loading config:', error);
       return null;
@@ -72,7 +61,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (item) {
               const label = item.querySelector('.font-medium')?.textContent || '未选择';
               if (categoryLabel) categoryLabel.textContent = label;
-              
               // 检查是否需要显示安装基础选择（特别是Class II的情况）
               checkFoundationRequirement(categoryValue);
             } else {
@@ -158,10 +146,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         rangeInput.value = config.report;
         const cycleVal = document.getElementById('cycle-val');
         if (cycleVal) cycleVal.textContent = config.report;
-        // 更新上报频率显示
-        setTimeout(() => {
-          calculateReportFrequency();
-        }, 10);
+        // 立即更新上报频率显示
+        calculateReportFrequency();
       }
     }
 
@@ -1604,6 +1590,8 @@ document.addEventListener('DOMContentLoaded', async () => {
               const newDetectInterval = parseInt(e.target.dataset.value);
               const currentReportCycle = parseInt(rangeInput.value);
               calculateBatteryLife(newDetectInterval, currentReportCycle);
+              // 同时更新上报频率显示
+              calculateReportFrequency();
             }, 10);
           }
         });
@@ -1615,6 +1603,8 @@ document.addEventListener('DOMContentLoaded', async () => {
           const currentDetectInterval = parseInt(detectFreqBtn.dataset.value);
           const newReportCycle = parseInt(rangeInput.value);
           calculateBatteryLife(currentDetectInterval, newReportCycle);
+          // 同时更新上报频率显示
+          calculateReportFrequency();
         });
       }
       
@@ -1627,6 +1617,8 @@ document.addEventListener('DOMContentLoaded', async () => {
               const currentDetectInterval = parseInt(detectFreqBtn.dataset.value);
               const currentReportCycle = parseInt(rangeInput.value);
               calculateBatteryLife(currentDetectInterval, currentReportCycle);
+              // 同时更新上报频率显示
+              calculateReportFrequency();
             }, 10);
           }
         });
