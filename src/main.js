@@ -1244,44 +1244,106 @@ document.addEventListener('DOMContentLoaded', async () => {
           maskStatus.textContent = '初始化...';
         }
 
-        // 1. 启动WiFi扫描
-        console.log('Starting WiFi scan...');
-        updateMaskProgress(10, '正在启动扫描...');
-        const startResponse = await fetch('/api/wifi-scan-start', { method: 'GET' });
-        console.log(startResponse);
-        if (!startResponse.ok) {
-          throw new Error('Failed to start WiFi scan');
+        // 1. 启动WiFi扫描（只发送请求，不检查结果）
+        console.log('发送WiFi扫描启动请求...');
+        updateMaskProgress(10, '正在启动WiFi扫描...');
+        try {
+          // 发送请求但不等待或检查结果
+          fetch('/api/wifi-scan-start', { method: 'GET' })
+            .then(response => {
+              if (response.ok) {
+                console.log('WiFi扫描启动请求发送成功');
+              } else {
+                console.warn('WiFi扫描启动请求返回非200状态:', response.status);
+              }
+            })
+            .catch(error => {
+              console.warn('WiFi扫描启动请求发送失败:', error.message);
+              // 不抛出错误，继续执行
+            });
+        } catch (error) {
+          console.warn('发送WiFi扫描启动请求时出错:', error.message);
+          // 不抛出错误，继续执行
         }
 
-        // 2. 轮询获取扫描结果（5次，每次间隔1秒）
+        // 2. 轮询获取扫描结果（5次，每次间隔2秒）
         let wifiData = null;
         let attempts = 0;
+        const waitingTime = 2000;
         const maxAttempts = 5;
+        
+        // 先等待2秒，让设备有时间扫描
+        updateMaskProgress(20, '等待设备扫描热点...');
+        await new Promise(resolve => setTimeout(resolve, waitingTime));
 
         while (attempts < maxAttempts) {
           attempts++;
-
-          updateMaskProgress(10 + (attempts * 15), `查询中 (${attempts}/${maxAttempts})...`);
-
-          const response = await fetch('/api/wifi-list');
-          if (!response.ok) {
-            throw new Error('Failed to fetch WiFi list');
-          }
-
-          const data = await response.json();
-
-          // 检查是否处理完成
-          if (data.status === 'processing') {
-            if (attempts < maxAttempts) {
-              // 等待2秒后重试（增加延迟）
-              await new Promise(resolve => setTimeout(resolve, 3000));
-              continue;
+          updateMaskProgress(20 + (attempts * 15), `查询中 (${attempts}/${maxAttempts})...`);
+          
+          try {
+            const response = await fetch('/api/wifi-list');
+            if (!response.ok) {
+              console.warn(`第${attempts}次查询失败: ${response.status}`);
+              if (attempts < maxAttempts) {
+                // 等待后继续尝试
+                await new Promise(resolve => setTimeout(resolve, waitingTime));
+                continue;
+              } else {
+                throw new Error('获取WiFi列表失败');
+              }
             }
-          } else if (data.networks && Array.isArray(data.networks)) {
-            wifiData = data.networks;
-            if (wifiData.length > 0) {
-              updateMaskProgress(90, `发现 ${wifiData.length} 个网络...`);
-              break;
+            
+            const data = await response.json();
+            console.log(`第${attempts}次查询响应:`, data);
+            
+            // 检查是否处理完成
+            if (data.status === 'processing') {
+              console.log(`第${attempts}次查询：服务器仍在处理中...`);
+              if (attempts < maxAttempts) {
+                // 等待2秒后重试
+                await new Promise(resolve => setTimeout(resolve, waitingTime));
+                continue;
+              } else {
+                throw new Error('WiFi扫描超时，服务器仍在处理中');
+              }
+            } 
+            // 检查是否返回了WiFi网络数据
+            else if (data.networks && Array.isArray(data.networks)) {
+              wifiData = data.networks;
+              if (wifiData.length > 0) {
+                console.log(`第${attempts}次查询成功：发现${wifiData.length}个WiFi网络`);
+                updateMaskProgress(90, `发现 ${wifiData.length} 个网络...`);
+                break; // 成功获取数据，退出循环
+              } else {
+                console.log(`第${attempts}次查询：发现0个WiFi网络`);
+                if (attempts < maxAttempts) {
+                  // 等待后继续尝试
+                  await new Promise(resolve => setTimeout(resolve, waitingTime));
+                  continue;
+                } else {
+                  throw new Error('未发现任何WiFi网络');
+                }
+              }
+            }
+            // 其他响应格式
+            else {
+              console.log(`第${attempts}次查询：未知响应格式`, data);
+              if (attempts < maxAttempts) {
+                // 等待后继续尝试
+                await new Promise(resolve => setTimeout(resolve, waitingTime));
+                continue;
+              } else {
+                throw new Error('服务器返回未知格式的响应');
+              }
+            }
+          } catch (error) {
+            console.log(`第${attempts}次查询异常:`, error.message);
+            if (attempts < maxAttempts) {
+              // 等待后继续尝试
+              await new Promise(resolve => setTimeout(resolve, waitingTime));
+              continue;
+            } else {
+              throw error;
             }
           }
         }
@@ -1310,9 +1372,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (wifiSelect) {
           // 按信号强度排序（从强到弱）
           filteredNetworks.sort((a, b) => b.rssi - a.rssi);
-
           wifiSelect.innerHTML = '<option value="">请选择 WiFi</option>';
-
           filteredNetworks.forEach(network => {
             const signalShength = getSignalQuality(network.rssi);
             const encLabel = network.enc ? ' 🔒' : '';
@@ -1366,7 +1426,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             processingMask.classList.add('hidden');
             processingMask.classList.remove('flex');
           }
-        }, 3000);
+        }, waitingTime);
 
         // WiFi选择框禁用
         const wifiSelect = document.getElementById('wifi-select');
