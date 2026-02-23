@@ -3,21 +3,201 @@ import katex from 'katex';
 import './style.css';
 
 document.addEventListener('DOMContentLoaded', async () => {
-  // 0. 加载配置数据
-  async function loadConfigData() {
+  // 7.1 WiFi 扫描完整流程
+  async function scanWifiNetworks() {
+
+    const processingMask = document.getElementById('processing-mask');
+    const maskTitle = document.getElementById('mask-title');
+    const maskDescription = document.getElementById('mask-description');
+    const maskStatus = document.getElementById('mask-status');
+    const maskProgress = document.getElementById('mask-progress');
+    const maskProgressText = document.getElementById('mask-progress-text');
+
     try {
-      const response = await fetch('/api/config');
-      if (!response.ok) {
-        console.warn('API加载失败:', response.status);
-        return null;
+      // 显示等待窗口
+      if (processingMask) {
+        processingMask.classList.remove('hidden');
+        processingMask.classList.add('flex');
       }
-      const config = await response.json();
-      console.log('从API加载配置数据成功');
-      await loadBatteryConfig();
-      return config;
+
+      // 重置进度
+      if (maskProgress) {
+        maskProgress.style.width = '0%';
+      }
+      if (maskProgressText) {
+        maskProgressText.textContent = '0%';
+      }
+      if (maskStatus) {
+        maskStatus.textContent = '初始化...';
+      }
+
+      // 1. 启动WiFi扫描
+      console.log('发送WiFi扫描启动请求...');
+      updateMaskProgress(10, '正在启动WiFi扫描...');
+      try {
+        // 发送请求并等待结果，确保扫描指令已下达
+        const startResponse = await fetch('/api/wifi-scan-start', { method: 'GET' });
+        if (startResponse.ok) {
+          console.log('WiFi扫描启动请求发送成功');
+        } else {
+          console.warn('WiFi扫描启动请求返回非200状态:', startResponse.status);
+          throw new Error(`WiFi扫描启动请求失败: ${startResponse.status}`);
+        }
+      } catch (error) {
+        console.warn('发送WiFi扫描启动请求时出错:', error.message);
+        throw error;
+      }
+
+      // 2. 轮询获取扫描结果（5次，每次间隔5秒）
+      let wifiData = null;
+      let attempts = 0;
+      const waitingTime = 5000;
+      const maxAttempts = 5;
+
+      // 先等待5秒，让设备有时间扫描
+      updateMaskProgress(20, '等待设备扫描热点...');
+
+      while (attempts < maxAttempts) {
+        attempts++;
+        updateMaskProgress(20 + (attempts * 15), `查询中 (${attempts}/${maxAttempts})...`);
+        await new Promise(resolve => setTimeout(resolve, waitingTime));
+        try {
+          const response = await fetch('/api/wifi-list');
+          if (!response.ok) {
+            if (attempts < maxAttempts) {
+              continue;
+            } else {
+              throw new Error('获取WiFi列表失败');
+            }
+          }
+          const data = await response.json();
+          // 检查是否处理完成
+          if (data.status === 'processing') {
+            if (attempts < maxAttempts) {
+              // 等待2秒后重试
+              continue;
+            } else {
+              throw new Error('WiFi扫描超时，服务器仍在处理中');
+            }
+          }
+          // 检查是否返回了WiFi网络数据
+          else if (data.networks && Array.isArray(data.networks)) {
+            wifiData = data.networks;
+            if (wifiData.length > 0) {
+              updateMaskProgress(90, `发现 ${wifiData.length} 个网络...`);
+              break; // 成功获取数据，退出循环
+            } else {
+              if (attempts < maxAttempts) {
+                continue;
+              } else {
+                throw new Error('未发现任何WiFi网络');
+              }
+            }
+          }
+          // 其他响应格式
+          else {
+            if (attempts < maxAttempts) {
+              continue;
+            } else {
+              throw new Error('服务器返回未知格式的响应');
+            }
+          }
+        } catch (error) {
+          if (attempts < maxAttempts) {
+            continue;
+          } else {
+            throw error;
+          }
+        }
+      }
+
+      if (!wifiData) {
+        throw new Error('WiFi scan timeout or no data received');
+      }
+
+      // 3. 过滤信号弱的热点 (rssi < -75)，但如果没有强信号的则显示所有
+      updateMaskProgress(95, '正在处理扫描结果...');
+      let filteredNetworks = wifiData.filter(network => {
+        return network.rssi >= -75;
+      });
+
+      if (filteredNetworks.length === 0) {
+        // 如果没有强信号网络，显示所有扫到的网络
+        filteredNetworks = wifiData;
+      }
+
+      if (filteredNetworks.length === 0) {
+        throw new Error('No available WiFi networks found');
+      }
+
+      // 4. 填充WiFi选择下拉菜单
+      const wifiSelect = document.getElementById('wifi-select');
+      if (wifiSelect) {
+        // 按信号强度排序（从强到弱）
+        filteredNetworks.sort((a, b) => b.rssi - a.rssi);
+        wifiSelect.innerHTML = '<option value="">请选择 WiFi</option>';
+        filteredNetworks.forEach(network => {
+          const signalShength = getSignalQuality(network.rssi);
+          const encLabel = network.enc ? ' 🔒' : '';
+          const option = document.createElement('option');
+          option.value = network.ssid;
+          option.dataset.encrypted = network.enc ? '1' : '0';
+          option.textContent = `${network.ssid} (${signalShength})${encLabel}`;
+          wifiSelect.appendChild(option);
+        });
+
+        wifiSelect.disabled = false;
+
+        // 5. 检查扫描结果中是否包含用户配置的热点
+        if (window.savedWifiConfig && window.savedWifiConfig.ssid) {
+          // 延迟一小段时间，确保DOM已更新
+          setTimeout(() => {
+            setWifiSelection(window.savedWifiConfig.ssid, window.savedWifiConfig.password);
+            // 清除保存的配置，避免重复设置
+            window.savedWifiConfig = null;
+          }, 50);
+        }
+      }
+
+      // 完成进度
+      updateMaskProgress(100, '扫描完成！');
+
+      // 延迟隐藏等待窗口，让用户看到完成状态
+      setTimeout(() => {
+        if (processingMask) {
+          processingMask.classList.add('hidden');
+          processingMask.classList.remove('flex');
+        }
+      }, 1000);
+
+      return true; // 成功
+
     } catch (error) {
-      console.warn('Error loading config:', error);
-      return null;
+      console.error('WiFi scan error:', error);
+
+      // 显示错误信息
+      if (maskTitle) maskTitle.textContent = '扫描失败';
+      if (maskDescription) maskDescription.textContent = error.message || '请检查网络连接';
+      if (maskStatus) maskStatus.textContent = '错误';
+      if (maskProgress) maskProgress.style.width = '100%';
+      if (maskProgressText) maskProgressText.textContent = '100%';
+
+      // 3秒后隐藏
+      setTimeout(() => {
+        if (processingMask) {
+          processingMask.classList.add('hidden');
+          processingMask.classList.remove('flex');
+        }
+      }, waitingTime);
+
+      // WiFi选择框禁用
+      const wifiSelect = document.getElementById('wifi-select');
+      if (wifiSelect) {
+        wifiSelect.innerHTML = '<option value="">扫描失败，请重试</option>';
+        wifiSelect.disabled = true;
+      }
+
+      return false; // 失败
     }
   }
 
@@ -36,7 +216,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       } else {
         isoValue = config.iso.standard; // 保持向后兼容
       }
-      
+
       const isoBtn = document.querySelector(`[data-value="${isoValue}"]`);
       if (isoBtn) {
         isoBtn.click();
@@ -48,7 +228,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const categoryValue = config.iso.category.toString(); // 转换为字符串，因为data-value是字符串
       const categoryInput = document.getElementById('iso-category');
       const categoryLabel = document.getElementById('iso-category-label');
-      
+
       if (categoryInput) {
         categoryInput.value = categoryValue;
 
@@ -70,7 +250,7 @@ document.addEventListener('DOMContentLoaded', async () => {
               if (isoStandardBtn) {
                 const isAdvanced = isoStandardBtn.dataset.value === 'ISO20816';
                 updateIsoCategoryDropdown(isAdvanced);
-                
+
                 // 再次尝试查找
                 setTimeout(() => {
                   const newItem = dropdown.querySelector(`[data-value="${categoryValue}"]`);
@@ -98,7 +278,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       } else {
         foundationValue = config.iso.foundation; // 保持向后兼容
       }
-      
+
       // 延迟执行，确保安装基础选择组已显示
       setTimeout(() => {
         const foundationBtn = document.querySelector(`#foundation-select [data-value="${foundationValue}"]`);
@@ -152,13 +332,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // 通讯方式
-    if (config.network!== undefined) {
+    if (config.network !== undefined) {
       const commBtn = document.querySelector(`#comm-type [data-value="${config.network}"]`);
       if (commBtn) {
         commBtn.click();
 
         // 如果是WiFi，需要加载并选择之前的SSID
-        if (config.network=== 2 && config.wifi?.ssid) {
+        if (config.network === 2 && config.wifi?.ssid) {
           // 保存要设置的SSID和密码到全局变量，供WiFi扫描完成后使用
           window.savedWifiConfig = {
             ssid: config.wifi.ssid,
@@ -172,9 +352,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (wifiSelect && wifiSelect.options.length > 1) {
               // 如果已经初始化，直接设置值
               setWifiSelection(window.savedWifiConfig.ssid, window.savedWifiConfig.password);
-            } else {
-              // 否则启动扫描，扫描完成后会自动检查并设置
-              scanWifiNetworks();
             }
           }, 100);
         }
@@ -252,41 +429,24 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (serverHostInput) serverHostInput.value = config.host || 'sentinel-cloud.com';
     }
   }
-  // 1. KaTeX 渲染示例 (在 ISO 标准描述中渲染公式)
-  const katexContainer = document.getElementById('katex-formula');
-  if (katexContainer) {
-    katex.render("v_{RMS} = \\sqrt{\\frac{1}{T} \\int_{0}^{T} v^2(t) dt}", katexContainer, {
-      throwOnError: false,
-      displayMode: false
-    });
+  // 0. 加载配置数据
+  async function loadConfigData() {
+    try {
+      const response = await fetch('/api/config');
+      if (!response.ok) {
+        console.warn('API加载失败:', response.status);
+        return null;
+      }
+      const config = await response.json();
+      populateFormData(config);
+      await loadBatteryConfig(config);
+      return config;
+    } catch (error) {
+      console.warn('Error loading config:', error);
+      return null;
+    }
   }
 
-  // 1.1 FFT公式渲染
-  const fftFormulaContainer = document.getElementById('fft-formula');
-  if (fftFormulaContainer) {
-    katex.render("X(k) = \\sum_{n=0}^{N-1} x(n) \\cdot e^{-j \\frac{2\\pi}{N} nk}, \\quad k = 0, \\dots, N-1", fftFormulaContainer, {
-      throwOnError: false,
-      displayMode: false
-    });
-  }
-
-  // 1.2 希尔伯特变换公式渲染
-  const hilbertFormulaContainer = document.getElementById('hilbert-formula');
-  if (hilbertFormulaContainer) {
-    katex.render("\\hat{x}(t) = \\frac{1}{\\pi} \\int_{-\\infty}^{\\infty} \\frac{x(\\tau)}{t - \\tau} d\\tau", hilbertFormulaContainer, {
-      throwOnError: false,
-      displayMode: false
-    });
-  }
-
-  // 1.3 峭度公式渲染
-  const kurtosisFormulaContainer = document.getElementById('kurtosis-formula');
-  if (kurtosisFormulaContainer) {
-    katex.render("K = \\frac{\\frac{1}{N} \\sum_{i=1}^{N} (x_i - \\bar{x})^4}{(\\frac{1}{N} \\sum_{i=1}^{N} (x_i - \\bar{x})^2)^2}", kurtosisFormulaContainer, {
-      throwOnError: false,
-      displayMode: false
-    });
-  }
 
   // 2. 状态管理
   let currentStep = 1;
@@ -320,7 +480,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (batteryCapacityElement && batteryCapacity) {
         batteryCapacityElement.textContent = `${batteryCapacity} mAh`;
       }
-      
+
       // 重新计算电池续航
       const detectFreqBtn = document.querySelector('#detect-frequency .pill.active');
       const rangeInput = document.getElementById('report-cycle');
@@ -849,13 +1009,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 电池容量（从配置读取）
   let batteryCapacity = 9000; // 默认值，从配置加载后会更新
 
-  // 确保电池容量元素存在
-  if (batteryCapacityElement) {
-    console.log('电池容量元素已找到:', batteryCapacityElement);
-  } else {
-    console.warn('电池容量元素未找到，ID: battery-capacity');
-  }
-
   // 功耗参数（从consumption.json读取）
   let powerConsumption = {
     imu_working: 1.0,          // IMU工作电流 (mA)
@@ -875,9 +1028,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const BATTERY_EFFICIENCY = 0.85; // 电池有效转换率
 
   // 加载电池容量和功耗配置
-  async function loadBatteryConfig() {
+  async function loadBatteryConfig(configData) {
     try {
-      // 首先尝试从配置数据中获取电池容量
       if (configData && configData.battery !== undefined) {
         batteryCapacity = configData.battery;
         if (batteryCapacityElement) {
@@ -885,7 +1037,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
       } else {
         // 如果没有battery字段，使用默认值
-        console.log('配置中没有battery字段，使用默认值9000 mAh');
         if (batteryCapacityElement) {
           batteryCapacityElement.textContent = `${batteryCapacity} mAh`;
         }
@@ -910,13 +1061,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
       console.log('开始加载功耗配置...');
       const consumptionResponse = await fetch('/api/consumption');
-      
+
       if (!consumptionResponse.ok) {
         throw new Error(`API响应状态: ${consumptionResponse.status}`);
       }
-      
+
       const consumption = await consumptionResponse.json();
-      
+
       if (consumption.components) {
         const comp = consumption.components;
         powerConsumption = {
@@ -1029,7 +1180,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 耗电电流变量 (单位: mA) - 从powerConsumption对象获取
     let I_hard_sleep; // 硬休眠总电流
-    
+
     if (commType === 1) {
       // 4G通讯模式
       I_hard_sleep = powerConsumption.cellular_standby + powerConsumption.imu_standby;
@@ -1052,27 +1203,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 2. 计算单次检测-上报周期的总耗电量
     // 检测间隔转换为秒
     const detectIntervalSec = detectInterval * 60;
-    
+
     // 单次检测耗时（秒）
     const t_sample = 2; // SAMPLE_DURATION
     // 单次上报耗时（秒）
     const t_report = 20; // REPORT_DURATION
-    
+
     // 计算一个完整周期的时间（秒）
     const T_cycle = detectIntervalSec * reportCycle;
-    
+
     // 计算一个周期内的总工作时间
     const t_working_total = (t_sample * reportCycle) + t_report;
-    
+
     // 计算一个周期内的休眠时间
     const t_sleep_total = T_cycle - t_working_total;
-    
+
     // 计算一个周期的总耗电量（mAh）
     const Q_cycle = (I_working * t_working_total / 3600) + (I_hard_sleep * t_sleep_total / 3600);
-    
+
     // 3. 计算电池续航（天）
     const days = (C_eff / Q_cycle) * (T_cycle / 86400);
-    
+
     // 4. 显示结果
     let displayText;
     if (days >= 365) {
@@ -1094,9 +1245,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         displayText = `${Math.floor(minutes)}分钟`;
       }
     }
-    
+
     batteryLifeElement.textContent = displayText;
-    
+
     // 同时更新预览页面的电池续航显示
     const previewBatteryLife = document.getElementById('preview-battery-life');
     if (previewBatteryLife) {
@@ -1109,8 +1260,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     const refreshWifiBtn = document.getElementById('refresh-wifi');
     const wifiSelect = document.getElementById('wifi-select');
 
-    // 添加扫描状态标志，防止重复扫描
-    let isScanning = false;
 
     // 监听通讯方式切换 (通过pill-group通用逻辑 + 额外的WiFi处理)
     if (commTypeGroup) {
@@ -1118,218 +1267,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (e.target.classList.contains('pill')) {
           const isWifi = e.target.dataset.value === '2';
           if (wifiBox) wifiBox.style.display = isWifi ? 'block' : 'none';
-          if (isWifi && !isScanning) {
-            simulateWifiScan();
-          }
         }
       });
     }
 
-    // 7.1 WiFi 扫描完整流程
-    async function scanWifiNetworks() {
-      // 防止重复扫描
-      if (isScanning) {
-        console.log('Scan already in progress, skipping...');
-        return false;
-      }
 
-      isScanning = true;
-      const processingMask = document.getElementById('processing-mask');
-      const maskTitle = document.getElementById('mask-title');
-      const maskDescription = document.getElementById('mask-description');
-      const maskStatus = document.getElementById('mask-status');
-      const maskProgress = document.getElementById('mask-progress');
-      const maskProgressText = document.getElementById('mask-progress-text');
-
-      try {
-        // 显示等待窗口
-        if (processingMask) {
-          processingMask.classList.remove('hidden');
-          processingMask.classList.add('flex');
-        }
-
-        // 重置进度
-        if (maskProgress) {
-          maskProgress.style.width = '0%';
-        }
-        if (maskProgressText) {
-          maskProgressText.textContent = '0%';
-        }
-        if (maskStatus) {
-          maskStatus.textContent = '初始化...';
-        }
-
-        // 1. 启动WiFi扫描
-        console.log('发送WiFi扫描启动请求...');
-        updateMaskProgress(10, '正在启动WiFi扫描...');
-        try {
-          // 发送请求并等待结果，确保扫描指令已下达
-          const startResponse = await fetch('/api/wifi-scan-start', { method: 'GET' });
-          if (startResponse.ok) {
-            console.log('WiFi扫描启动请求发送成功');
-          } else {
-            console.warn('WiFi扫描启动请求返回非200状态:', startResponse.status);
-            throw new Error(`WiFi扫描启动请求失败: ${startResponse.status}`);
-          }
-        } catch (error) {
-          console.warn('发送WiFi扫描启动请求时出错:', error.message);
-          throw error;
-        }
-
-        // 2. 轮询获取扫描结果（5次，每次间隔5秒）
-        let wifiData = null;
-        let attempts = 0;
-        const waitingTime = 5000;
-        const maxAttempts = 5;
-        
-        // 先等待5秒，让设备有时间扫描
-        updateMaskProgress(20, '等待设备扫描热点...');
-
-        while (attempts < maxAttempts) {
-          attempts++;
-          updateMaskProgress(20 + (attempts * 15), `查询中 (${attempts}/${maxAttempts})...`);
-          await new Promise(resolve => setTimeout(resolve, waitingTime));
-          try {
-            const response = await fetch('/api/wifi-list');
-            if (!response.ok) {
-              if (attempts < maxAttempts) {
-                continue;
-              } else {
-                throw new Error('获取WiFi列表失败');
-              }
-            }
-            const data = await response.json();
-            // 检查是否处理完成
-            if (data.status === 'processing') {
-              if (attempts < maxAttempts) {
-                // 等待2秒后重试
-                continue;
-              } else {
-                throw new Error('WiFi扫描超时，服务器仍在处理中');
-              }
-            } 
-            // 检查是否返回了WiFi网络数据
-            else if (data.networks && Array.isArray(data.networks)) {
-              wifiData = data.networks;
-              if (wifiData.length > 0) {
-                updateMaskProgress(90, `发现 ${wifiData.length} 个网络...`);
-                break; // 成功获取数据，退出循环
-              } else {
-                if (attempts < maxAttempts) {
-                  continue;
-                } else {
-                  throw new Error('未发现任何WiFi网络');
-                }
-              }
-            }
-            // 其他响应格式
-            else {
-              if (attempts < maxAttempts) {
-                continue;
-              } else {
-                throw new Error('服务器返回未知格式的响应');
-              }
-            }
-          } catch (error) {
-            if (attempts < maxAttempts) {
-              continue;
-            } else {
-              throw error;
-            }
-          }
-        }
-
-        if (!wifiData) {
-          throw new Error('WiFi scan timeout or no data received');
-        }
-
-        // 3. 过滤信号弱的热点 (rssi < -75)，但如果没有强信号的则显示所有
-        updateMaskProgress(95, '正在处理扫描结果...');
-        let filteredNetworks = wifiData.filter(network => {
-          return network.rssi >= -75;
-        });
-
-        if (filteredNetworks.length === 0) {
-          // 如果没有强信号网络，显示所有扫到的网络
-          filteredNetworks = wifiData;
-        }
-
-        if (filteredNetworks.length === 0) {
-          throw new Error('No available WiFi networks found');
-        }
-
-        // 4. 填充WiFi选择下拉菜单
-        const wifiSelect = document.getElementById('wifi-select');
-        if (wifiSelect) {
-          // 按信号强度排序（从强到弱）
-          filteredNetworks.sort((a, b) => b.rssi - a.rssi);
-          wifiSelect.innerHTML = '<option value="">请选择 WiFi</option>';
-          filteredNetworks.forEach(network => {
-            const signalShength = getSignalQuality(network.rssi);
-            const encLabel = network.enc ? ' 🔒' : '';
-            const option = document.createElement('option');
-            option.value = network.ssid;
-            option.dataset.encrypted = network.enc ? '1' : '0';
-            option.textContent = `${network.ssid} (${signalShength})${encLabel}`;
-            wifiSelect.appendChild(option);
-          });
-
-          wifiSelect.disabled = false;
-
-          // 5. 检查扫描结果中是否包含用户配置的热点
-          if (window.savedWifiConfig && window.savedWifiConfig.ssid) {
-            // 延迟一小段时间，确保DOM已更新
-            setTimeout(() => {
-              setWifiSelection(window.savedWifiConfig.ssid, window.savedWifiConfig.password);
-              // 清除保存的配置，避免重复设置
-              window.savedWifiConfig = null;
-            }, 50);
-          }
-        }
-
-        // 完成进度
-        updateMaskProgress(100, '扫描完成！');
-
-        // 延迟隐藏等待窗口，让用户看到完成状态
-        setTimeout(() => {
-          if (processingMask) {
-            processingMask.classList.add('hidden');
-            processingMask.classList.remove('flex');
-          }
-        }, 1000);
-
-        isScanning = false; // 重置扫描状态
-        return true; // 成功
-
-      } catch (error) {
-        console.error('WiFi scan error:', error);
-
-        // 显示错误信息
-        if (maskTitle) maskTitle.textContent = '扫描失败';
-        if (maskDescription) maskDescription.textContent = error.message || '请检查网络连接';
-        if (maskStatus) maskStatus.textContent = '错误';
-        if (maskProgress) maskProgress.style.width = '100%';
-        if (maskProgressText) maskProgressText.textContent = '100%';
-
-        // 3秒后隐藏
-        setTimeout(() => {
-          if (processingMask) {
-            processingMask.classList.add('hidden');
-            processingMask.classList.remove('flex');
-          }
-        }, waitingTime);
-
-        // WiFi选择框禁用
-        const wifiSelect = document.getElementById('wifi-select');
-        if (wifiSelect) {
-          wifiSelect.innerHTML = '<option value="">扫描失败，请重试</option>';
-          wifiSelect.disabled = true;
-        }
-
-        isScanning = false; // 重置扫描状态
-        return false; // 失败
-      }
-    }
 
     // 7.1.1 更新遮罩进度
     function updateMaskProgress(percent, statusText) {
@@ -1356,18 +1298,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       return '弱';
     }
 
-    // 7.3 模拟 WiFi 扫描入口
-    function simulateWifiScan() {
-      if (!wifiSelect) return;
-      wifiSelect.innerHTML = '<option>正在扫描...</option>';
-      wifiSelect.disabled = true;
-
-      // 调用新的扫描流程
-      scanWifiNetworks();
-    }
-
     if (refreshWifiBtn) {
-      refreshWifiBtn.addEventListener('click', simulateWifiScan);
+      refreshWifiBtn.addEventListener('click', scanWifiNetworks);
     }
 
     // WiFi 密码框显示逻辑 - 仅当选择加密热点时显示
@@ -1440,7 +1372,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           } else if (isoStandardBtn?.dataset.value === 'ISO20816') {
             isoStandardValue = 2;
           }
-          
+
           const isoCategory = document.getElementById('iso-category')?.value || '';
 
           const foundationBtn = document.querySelector('#foundation-select .pill.active');
@@ -1509,7 +1441,8 @@ document.addEventListener('DOMContentLoaded', async () => {
           showErrorToast('配置已成功提交！设备将立即重启并开始监测。', '成功');
         } catch (error) {
           console.error('Save error:', error);
-          showErrorToast('保存失败: ' + error.message);        } finally {
+          showErrorToast('保存失败: ' + error.message);
+        } finally {
           if (mask) {
             mask.classList.add('hidden');
             mask.classList.remove('flex');
@@ -1524,14 +1457,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 获取初始值
     const detectFreqBtn = document.querySelector('#detect-frequency .pill.active');
     const rangeInput = document.getElementById('report-cycle');
-    
+
     if (detectFreqBtn && rangeInput) {
       const detectInterval = parseInt(detectFreqBtn.dataset.value);
       const reportCycle = parseInt(rangeInput.value);
-      
+
       // 初始计算
       calculateBatteryLife(detectInterval, reportCycle);
-      
+
       // 监听检测频率变化
       const detectFrequencyGroup = document.getElementById('detect-frequency');
       if (detectFrequencyGroup) {
@@ -1547,7 +1480,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
         });
       }
-      
+
       // 监听上报周期变化
       if (rangeInput) {
         rangeInput.addEventListener('input', () => {
@@ -1558,7 +1491,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           calculateReportFrequency();
         });
       }
-      
+
       // 监听通讯方式变化
       const commTypeGroup = document.getElementById('comm-type');
       if (commTypeGroup) {
@@ -1576,9 +1509,4 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     }
   }
-
-  // 页面加载完成后初始化电池续航计算
-  setTimeout(() => {
-    initializeBatteryLifeCalculation();
-  }, 500);
 });
